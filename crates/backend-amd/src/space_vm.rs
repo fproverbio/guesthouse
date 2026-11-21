@@ -165,6 +165,16 @@ pub struct SpaceVm {
     shares: HashMap<u32, Share>,
     /// How fast the card's clock runs, to read the times runs note.
     clock_khz: u32,
+    /// The kernel's list of the buffers a run here may touch, and whether a mapping has changed since
+    /// it was made. Validating it costs milliseconds at these sizes, so it is made only when it changes.
+    bo_list: Option<u64>,
+    bo_list_stale: bool,
+    /// The buffers the cached list was made from. The kernel validates that list, not the array a
+    /// submission carries, so a list made from another set is a list that names the wrong buffers.
+    bo_list_holds: Vec<GemHandle>,
+    /// Set once the kernel has refused a list here, so every submission after that carries its own
+    /// rather than asking again.
+    bo_list_given_up: bool,
 }
 
 /// Where a run's fence is in guest memory, by guest physical address, and the value it ends with.
@@ -248,6 +258,10 @@ impl SpaceVm {
             video_wake_failed: false,
             shares: HashMap::new(),
             clock_khz: device.info().counter_freq_khz,
+            bo_list: None,
+            bo_list_stale: true,
+            bo_list_holds: Vec::new(),
+            bo_list_given_up: false,
         })
     }
 
@@ -275,6 +289,40 @@ impl SpaceVm {
     /// The fault that stopped this space, if its work has had one.
     pub fn faulted(&self) -> Option<Fault> {
         self.faults.found()
+    }
+
+    /// The buffers a submission may touch, made into a list once and named by its handle after that.
+    /// The guest doesn't say which it uses, so every buffer mapped here is in it.
+    fn buffer_list(&mut self, buffers: &[GemHandle]) -> io::Result<Option<u64>> {
+        if self.bo_list_given_up {
+            return Ok(None);
+        }
+        if self.bo_list.is_some() && !self.bo_list_stale && self.bo_list_holds == buffers {
+            return Ok(self.bo_list);
+        }
+        if buffers.is_empty() {
+            return Ok(None);
+        }
+        let made = match submit::make_bo_list(&self.file, buffers, self.bo_list) {
+            Ok(made) => made,
+            Err(error) => {
+                // The kernel refuses a list it cannot take, and a submission that names its buffers
+                // outright still runs, so the space gets that from now on rather than losing its
+                // card. This cost the screen once, when a refusal went up instead of sideways.
+                static TOLD: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                TOLD.get_or_init(|| {
+                    log::warn!("the kernel won't take this space's buffer list ({error}); submissions name the buffers themselves");
+                });
+                self.bo_list = None;
+                self.bo_list_given_up = true;
+                return Ok(None);
+            }
+        };
+        self.bo_list = Some(made);
+        self.bo_list_stale = false;
+        self.bo_list_holds.clear();
+        self.bo_list_holds.extend_from_slice(buffers);
+        Ok(Some(made))
     }
 
     /// Runs command buffers already mapped here on the engine family `ip_type`, in order, and waits
@@ -352,8 +400,9 @@ impl SpaceVm {
         // The guest doesn't say which buffers the work uses, so it may use any mapped here.
         let mut buffers = self.books.handles();
         buffers.push(own);
+        let list = self.buffer_list(&buffers)?;
         let submitted = self.contexts.submit(&self.file, HW_IP_VCN_ENC, Some(queue), |context| {
-            submit::submit_all(&self.file, context, HW_IP_VCN_ENC, runs, &buffers, &retired).map(|_| ())
+            submit::submit_all(&self.file, context, HW_IP_VCN_ENC, runs, &buffers, list, &retired).map(|_| ())
         });
         match submitted {
             Ok(()) => {
@@ -450,7 +499,8 @@ impl SpaceVm {
             // As in `submit_and_wait`: any buffer mapped here may be used.
             let buffers = self.books.handles();
             let submitted = self.contexts.submit(&self.file, ip_type, None, |context| {
-                submit::submit_after(&self.file, context, ip_type, ibs, &buffers, &waits, &signal).map(|_| ())
+                submit::submit_after(&self.file, context, ip_type, ibs, &buffers, None, &waits, &signal)
+                    .map(|_| ())
             });
             match submitted {
                 Ok(()) => Ok(Sent::OnCard(signal)),
@@ -491,10 +541,12 @@ impl SpaceVm {
         patience: Patience,
     ) -> io::Result<Ran> {
         let signal = Syncobj::create(&self.file).map_err(|error| step("making a sync object", error))?;
-        // The guest doesn't say which buffers the work uses, so it may use any mapped here.
+        // The guest doesn't say which buffers the work uses, so it may use any mapped here, named by
+        // a list the kernel keeps rather than by every handle each time.
         let buffers = self.books.handles();
+        let list = self.buffer_list(&buffers)?;
         let submitted = self.contexts.submit(&self.file, ip_type, queue, |context| {
-            submit::submit_all(&self.file, context, ip_type, ibs, &buffers, &signal).map(|_| ())
+            submit::submit_all(&self.file, context, ip_type, ibs, &buffers, list, &signal).map(|_| ())
         });
         let ran = match submitted {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Ran::Refused),
@@ -559,12 +611,14 @@ impl SpaceVm {
             )));
         }
         let retired = Syncobj::create(&self.file).map_err(|error| step("making a sync object", error))?;
-        // The guest doesn't say which buffers the work uses, so it may use any mapped here.
+        // The guest doesn't say which buffers the work uses, so it may use any mapped here, and the
+        // fence writers, which are this file's own.
         let mut buffers = self.books.handles();
         buffers.push(fence_ibs.handle());
         let stamped = with_clock_notes(ibs, slot);
+        let list = self.buffer_list(&buffers)?;
         let submitted = self.contexts.submit(&self.file, ip_type, Some(fence.queue), |context| {
-            submit::submit_all(&self.file, context, ip_type, &stamped, &buffers, &retired).map(|_| ())
+            submit::submit_all(&self.file, context, ip_type, &stamped, &buffers, list, &retired).map(|_| ())
         });
         match submitted {
             Ok(_) => {
@@ -668,6 +722,7 @@ impl SpaceVm {
             return Err(error);
         }
         self.books.add(buffer, handle, address, offset, length);
+        self.bo_list_stale = true;
         Ok(())
     }
 
@@ -676,6 +731,7 @@ impl SpaceVm {
         let Some(unmapping) = self.books.remove(address) else {
             return Ok(());
         };
+        self.bo_list_stale = true;
         let result = memory::unmap(&self.file, unmapping.handle, unmapping.address, unmapping.length);
         if unmapping.last_use {
             memory::close(&self.file, unmapping.handle);
@@ -775,6 +831,10 @@ mod tests {
             video_wake_failed: false,
             shares: HashMap::new(),
             clock_khz: 100_000,
+            bo_list: None,
+            bo_list_stale: true,
+            bo_list_holds: Vec::new(),
+            bo_list_given_up: false,
         }
     }
 
