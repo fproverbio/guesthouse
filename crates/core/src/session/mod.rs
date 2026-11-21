@@ -479,7 +479,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 | C::UnlockForCpu
                 | C::SetContextPriority
                 | C::SetFlipFenceValue
-                | C::IsSyncObjectSignaled,
+                | C::IsSyncObjectSignaled
+                | C::StartQuery,
             ) => answer_status(Status::SUCCESS, out),
 
             Some(C::Unknown(number)) => {

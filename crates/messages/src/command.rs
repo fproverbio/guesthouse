@@ -77,6 +77,7 @@ commands! {
     CreateHardwareQueue = 50,
     DestroyHardwareQueue = 51,
     SubmitToHardwareQueue = 52,
+    StartQuery = 53,
     SetAllocationPriority = 59,
     GetAllocationPriority = 60,
     QueryClockCalibration = 62,
