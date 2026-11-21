@@ -104,11 +104,22 @@ fn no_script_finds_a_group_by_its_english_name() {
     assert!(check.contains("$administrators = 'S-1-5-32-544'"));
 }
 
+/// Windows is installed without a licence, and the only keys the answer file can carry are Microsoft's
+/// KMS client keys, which pick an edition and activate nothing. The template itself carries none: the
+/// edition and its key are filled in from the disc the machine installs from.
 #[test]
-fn the_only_key_is_the_published_one_that_activates_nothing() {
+fn the_only_keys_are_the_published_ones_that_activate_nothing() {
     let answers = fs::read_to_string(guest_file("autounattend.xml")).unwrap();
-    assert_eq!(answers.matches("<ProductKey>").count(), 1);
-    assert!(answers.contains("<Key>W269N-WFGWX-YVC9B-4J6C9-T83GX</Key>"));
+    assert!(!answers.contains("<ProductKey>"), "the template picks its key when it is filled");
+    assert!(answers.contains("<Value>@EDITION@</Value>"));
+    assert!(answers.contains("@PRODUCT_KEY@"));
+    let keys: Vec<&str> =
+        guesthouse_app_core::iso::WINDOWS_EDITIONS.iter().filter_map(|(_, key)| *key).collect();
+    assert_eq!(
+        keys,
+        ["W269N-WFGWX-YVC9B-4J6C9-T83GX", "KBN8V-HFGQ4-MGXVD-347P6-PDQGT"],
+        "adding another key is a decision, and one that would activate Windows is not one this makes"
+    );
 }
 
 #[test]

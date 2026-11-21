@@ -23,8 +23,39 @@ pub fn any_iso_maker() -> bool {
     ISO_MAKERS.iter().any(|program| on_path(program))
 }
 
-/// What the answer file and its key install.
+/// What the answer file and its key install when the disc has no other edition this project runs.
 pub const WINDOWS_EDITION: &str = "Windows 11 Pro";
+
+/// The Windows 11 editions a guest runs here, best first, with the KMS client key Microsoft publishes
+/// for each one Setup has to be told by key. A multi-edition disc installs the first of these it has,
+/// so Pro as it always did. Enterprise and its LTSC forms carry the same paravirtual display and the
+/// same driver store as Pro; what differs is the licence and what Windows ships with it.
+pub const WINDOWS_EDITIONS: [(&str, Option<&str>); 6] = [
+    (WINDOWS_EDITION, Some("W269N-WFGWX-YVC9B-4J6C9-T83GX")),
+    ("Windows 11 Pro for Workstations", None),
+    ("Windows 11 Enterprise", None),
+    ("Windows 11 Education", None),
+    // Before plain Enterprise LTSC: this is the edition the project wants where a disc has both, and
+    // its key is one Microsoft publishes, so Setup is never left asking.
+    ("Windows 11 IoT Enterprise LTSC", Some("KBN8V-HFGQ4-MGXVD-347P6-PDQGT")),
+    ("Windows 11 Enterprise LTSC", None),
+];
+
+/// The key that picks `edition` in Setup, when one is known. Windows stays unactivated either way:
+/// without a key the image's own name picks the edition.
+pub fn edition_key(edition: &str) -> Option<&'static str> {
+    WINDOWS_EDITIONS.iter().find(|(name, _)| same_edition(edition, name)).and_then(|(_, key)| *key)
+}
+
+/// Whether an image is the edition `name`, or that edition's own yearly image: LTSC media name their
+/// images "Windows 11 IoT Enterprise LTSC 2024", and Setup shows them without the year.
+fn same_edition(image: &str, name: &str) -> bool {
+    if image == name {
+        return true;
+    }
+    let Some(rest) = image.strip_prefix(name) else { return false };
+    rest.len() == 5 && rest.starts_with(' ') && rest[1..].chars().all(|digit| digit.is_ascii_digit())
+}
 const FIRST_WINDOWS_11_BUILD: u32 = 22000;
 const WIM_AMD64: &str = "9";
 const WIM_MAGIC: &[u8; 8] = b"MSWIM\0\0\0";
@@ -99,7 +130,7 @@ fn field<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 }
 
 /// Each image's name, build and architecture, from a WIM's XML block.
-fn images_in(text: &str) -> Vec<(String, u32, String)> {
+fn images_in(text: &str) -> Vec<(String, String, u32, String)> {
     let mut images = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find("<IMAGE ") {
@@ -107,7 +138,8 @@ fn images_in(text: &str) -> Vec<(String, u32, String)> {
         let image = &rest[start..start + end];
         let build = field(image, "BUILD").and_then(|text| text.parse().ok());
         if let (Some(name), Some(build), Some(arch)) = (field(image, "NAME"), build, field(image, "ARCH")) {
-            images.push((name.to_owned(), build, arch.to_owned()));
+            let shown = field(image, "DISPLAYNAME").unwrap_or(name);
+            images.push((name.to_owned(), shown.to_owned(), build, arch.to_owned()));
         }
         rest = &rest[start + end..];
     }
@@ -143,7 +175,7 @@ fn wim_xml(stream: &mut impl Read) -> Option<String> {
     Some(utf16_text(&data))
 }
 
-fn wim_images(path: &str, entry: &str) -> Vec<(String, u32, String)> {
+fn wim_images(path: &str, entry: &str) -> Vec<(String, String, u32, String)> {
     let child = Command::new("7z")
         .args(["x", "-so", path, entry])
         .stdout(Stdio::piped())
@@ -224,13 +256,20 @@ fn read_disc(path: &str, look: Look) -> Result<Iso> {
     if look == Look::Names {
         return Ok(Iso::plain_windows("Windows"));
     }
-    for (name, build, architecture) in wim_images(path, entry) {
-        if name == WINDOWS_EDITION && build >= FIRST_WINDOWS_11_BUILD && architecture == WIM_AMD64 {
-            let title = format!("{name}, build {build}");
-            return Ok(Iso { kind: Kind::Windows, title, edition: name, windows_disc: true });
+    let images = wim_images(path, entry);
+    // The best edition the disc has, not the first image on it: a disc that carries Home and Pro
+    // installs Pro, as it did when Pro was the only one looked for. The answer file names the image
+    // as Setup shows it, which is the display name, not the image's own name.
+    for (edition, _) in WINDOWS_EDITIONS {
+        let found = images.iter().find(|(name, _, build, architecture)| {
+            same_edition(name, edition) && *build >= FIRST_WINDOWS_11_BUILD && architecture == WIM_AMD64
+        });
+        if let Some((_, shown, build, _)) = found {
+            let title = format!("{shown}, build {build}");
+            return Ok(Iso { kind: Kind::Windows, title, edition: shown.clone(), windows_disc: true });
         }
     }
-    Ok(Iso::plain_windows("Windows, but not 64-bit Windows 11 with the Pro edition"))
+    Ok(Iso::plain_windows("Windows, but not 64-bit Windows 11 with an edition a guest runs"))
 }
 
 #[cfg(test)]
@@ -294,6 +333,25 @@ mod tests {
         let data = wim(&["Windows 11 Pro"], 26300, 9);
         let esd = make_iso(&scratch, "esd", &[("sources/install.esd", &data)]);
         assert_eq!(read_iso(&esd).unwrap().kind, Kind::Windows, "an ESD counts too");
+    }
+
+    #[test]
+    fn an_iot_ltsc_disc_is_windows_and_keeps_its_own_edition() {
+        let scratch = Scratch::new();
+        // The image the IoT LTSC media carries, which is the whole disc: no Pro on it at all.
+        let data = wim(&["Windows 11 IoT Enterprise LTSC"], 26100, 9);
+        let found = read_iso(&make_iso(&scratch, "iot-ltsc", &[("sources/install.wim", &data)])).unwrap();
+        assert_eq!((found.kind, found.edition.as_str()), (Kind::Windows, "Windows 11 IoT Enterprise LTSC"));
+        assert_eq!(edition_key("Windows 11 IoT Enterprise LTSC"), Some("KBN8V-HFGQ4-MGXVD-347P6-PDQGT"));
+        assert_eq!(edition_key("Windows 11 Enterprise LTSC"), None, "an edition without a known key installs by name");
+    }
+
+    #[test]
+    fn a_disc_with_pro_and_an_ltsc_image_installs_pro() {
+        let scratch = Scratch::new();
+        let data = wim(&["Windows 11 IoT Enterprise LTSC", "Windows 11 Pro"], 26100, 9);
+        let found = read_iso(&make_iso(&scratch, "both", &[("sources/install.wim", &data)])).unwrap();
+        assert_eq!(found.edition, "Windows 11 Pro", "Pro is still what a multi-edition disc gives");
     }
 
     #[test]

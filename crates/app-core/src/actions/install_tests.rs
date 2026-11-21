@@ -100,11 +100,11 @@ fn the_answer_file_gets_the_hosts_zone() {
     let context = scratch_context(&scratch);
     scratch.write("program/guest/autounattend.xml", "<a><TimeZone>UTC</TimeZone></a>");
     assert_eq!(
-        answer_file(&context, "Asia/Tokyo", "gpupv", "secret").unwrap(),
+        answer_file(&context, "Asia/Tokyo", "gpupv", "secret", None).unwrap(),
         "<a><TimeZone>Tokyo Standard Time</TimeZone></a>"
     );
     assert_eq!(
-        answer_file(&context, "Mars/Olympus_Mons", "gpupv", "secret").unwrap(),
+        answer_file(&context, "Mars/Olympus_Mons", "gpupv", "secret", None).unwrap(),
         "<a><TimeZone>UTC</TimeZone></a>"
     );
 }
@@ -115,7 +115,7 @@ fn the_answer_file_gets_the_machines_password() {
     let context = scratch_context(&scratch);
     scratch.write("program/guest/autounattend.xml", "<Value>@PASSWORD@</Value><Value>@PASSWORD@</Value>");
     assert_eq!(
-        answer_file(&context, "Asia/Tokyo", "gpupv", "secret").unwrap(),
+        answer_file(&context, "Asia/Tokyo", "gpupv", "secret", None).unwrap(),
         "<Value>secret</Value><Value>secret</Value>"
     );
 }
@@ -126,9 +126,30 @@ fn the_answer_file_gets_the_account_as_xml() {
     let context = scratch_context(&scratch);
     scratch.write("program/guest/autounattend.xml", "<Name>@USER@</Name><Value>@PASSWORD@</Value>");
     assert_eq!(
-        answer_file(&context, "UTC", "Ana B", "a<b>&c").unwrap(),
+        answer_file(&context, "UTC", "Ana B", "a<b>&c", None).unwrap(),
         "<Name>Ana B</Name><Value>a&lt;b&gt;&amp;c</Value>"
     );
+}
+
+#[test]
+fn the_answer_file_picks_the_edition_and_its_key_or_neither() {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    scratch.write(
+        "program/guest/autounattend.xml",
+        "<Value>@EDITION@</Value>@PRODUCT_KEY@<AcceptEula>true</AcceptEula>",
+    );
+    let pro = answer_file(&context, "UTC", "gpupv", "secret", Some("Windows 11 Pro")).unwrap();
+    assert!(pro.contains("<Value>Windows 11 Pro</Value>"));
+    assert!(pro.contains("W269N-WFGWX-YVC9B-4J6C9-T83GX"));
+    let iot = answer_file(&context, "UTC", "gpupv", "secret", Some("Windows 11 IoT Enterprise LTSC")).unwrap();
+    assert!(iot.contains("<Value>Windows 11 IoT Enterprise LTSC</Value>"));
+    assert!(iot.contains("KBN8V-HFGQ4-MGXVD-347P6-PDQGT"));
+    let keyless = answer_file(&context, "UTC", "gpupv", "secret", Some("Windows 11 Enterprise LTSC")).unwrap();
+    assert!(keyless.contains("<Value>Windows 11 Enterprise LTSC</Value>"));
+    assert!(!keyless.contains("<ProductKey>"), "an edition with no known key is picked by name");
+    let defaulted = answer_file(&context, "UTC", "gpupv", "secret", None).unwrap();
+    assert!(defaulted.contains("<Value>Windows 11 Pro</Value>"), "an unread disc still gets Pro");
 }
 
 #[test]
