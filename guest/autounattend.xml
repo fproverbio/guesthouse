@@ -24,9 +24,8 @@
         <InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/NAME</Key><Value>@EDITION@</Value></MetaData></InstallFrom>
         <InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>
       </OSImage></ImageInstall>
-      <!-- The KMS client key Microsoft publishes for the edition, when one picks it by key, so Setup
-           doesn't stop and ask. Windows stays unactivated until you add your own licence. Without
-           one the image's own name picks the edition, which is what the other editions rely on. -->
+      <!-- The KMS client key Microsoft publishes for the edition. It picks the edition, so Setup
+           doesn't stop and ask. Windows stays unactivated until you add your own licence. -->
       <UserData>@PRODUCT_KEY@<AcceptEula>true</AcceptEula><FullName>@USER@</FullName><Organization>Guesthouse</Organization></UserData>
     </component>
   </settings>

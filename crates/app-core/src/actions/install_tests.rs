@@ -132,7 +132,7 @@ fn the_answer_file_gets_the_account_as_xml() {
 }
 
 #[test]
-fn the_answer_file_picks_the_edition_and_its_key_or_neither() {
+fn the_answer_file_picks_the_edition_and_its_key() {
     let scratch = Scratch::new();
     let context = scratch_context(&scratch);
     scratch.write(
@@ -142,12 +142,14 @@ fn the_answer_file_picks_the_edition_and_its_key_or_neither() {
     let pro = answer_file(&context, "UTC", "gpupv", "secret", Some("Windows 11 Pro")).unwrap();
     assert!(pro.contains("<Value>Windows 11 Pro</Value>"));
     assert!(pro.contains("W269N-WFGWX-YVC9B-4J6C9-T83GX"));
-    let iot = answer_file(&context, "UTC", "gpupv", "secret", Some("Windows 11 IoT Enterprise LTSC")).unwrap();
+    let iot =
+        answer_file(&context, "UTC", "gpupv", "secret", Some("Windows 11 IoT Enterprise LTSC")).unwrap();
     assert!(iot.contains("<Value>Windows 11 IoT Enterprise LTSC</Value>"));
     assert!(iot.contains("KBN8V-HFGQ4-MGXVD-347P6-PDQGT"));
-    let keyless = answer_file(&context, "UTC", "gpupv", "secret", Some("Windows 11 Enterprise LTSC")).unwrap();
-    assert!(keyless.contains("<Value>Windows 11 Enterprise LTSC</Value>"));
-    assert!(!keyless.contains("<ProductKey>"), "an edition with no known key is picked by name");
+    let year =
+        answer_file(&context, "UTC", "gpupv", "secret", Some("Windows 11 IoT Enterprise LTSC 2024")).unwrap();
+    assert!(year.contains("<Value>Windows 11 IoT Enterprise LTSC 2024</Value>"), "the image's own name");
+    assert!(year.contains("KBN8V-HFGQ4-MGXVD-347P6-PDQGT"), "a year on the end is the same edition");
     let defaulted = answer_file(&context, "UTC", "gpupv", "secret", None).unwrap();
     assert!(defaulted.contains("<Value>Windows 11 Pro</Value>"), "an unread disc still gets Pro");
 }

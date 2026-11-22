@@ -12,7 +12,7 @@ use crate::failure::{Failure, Result};
 use crate::gpu_maker::GpuMaker;
 use crate::iso::{self, iso_maker};
 use crate::library::make_disk;
-use crate::machine::Machine;
+use crate::machine::{Kind, Machine};
 use crate::monitor::Command as Qmp;
 use crate::remote_access::{INSTALLER_ON_DISC, Service, disc_scripts, read_access};
 use crate::setup::guest_driver::guest_driver;
@@ -59,8 +59,8 @@ const PASSWORD_MARK: &str = "@PASSWORD@";
 const USER_MARK: &str = "@USER@";
 
 /// The answer file for a host in this IANA zone, making this account. The template says UTC. The
-/// edition is the disc's own when it was read, and Pro when it wasn't: Setup then picks Pro by key,
-/// as it always did, and any other edition by the name of its image.
+/// edition is the disc's own when it was read, and Pro when it wasn't, as it always was. Its key
+/// tells Setup the edition so it doesn't stop to ask.
 pub fn answer_file(
     context: &Context,
     zone: &str,
@@ -81,10 +81,11 @@ pub fn answer_file(
     Ok(filled.replace(USER_MARK, &xml_text(user)).replace(PASSWORD_MARK, &xml_text(password)))
 }
 
-/// The edition of the disc this machine installs from, when the disc can be read.
+/// The edition of the disc this machine installs from, when the disc can be read and has one a guest
+/// runs. A Windows disc with another edition is a plain VM, and its edition is empty.
 fn disc_edition(machine: &Machine) -> Option<String> {
     let iso = iso::read_iso(&machine.iso).ok()?;
-    iso.windows_disc.then_some(iso.edition)
+    (iso.kind == Kind::Windows).then_some(iso.edition)
 }
 
 /// A guest script that names the account, with this machine's name in it.
@@ -140,7 +141,8 @@ fn fill_answer_disc(context: &Context, machine: &Machine, files: &Path) -> Resul
     }
     let password = make_password(context, machine)?;
     let zone = zones::host_zone(zones::HOST_ZONE_LINK);
-    let answers = answer_file(context, &zone, machine.account(), &password, disc_edition(machine).as_deref())?;
+    let answers =
+        answer_file(context, &zone, machine.account(), &password, disc_edition(machine).as_deref())?;
     fs::write(files.join("autounattend.xml"), password_is_filled(answers)?)?;
     fs::write(files.join(TOKEN_ON_DISC), make_token(context, machine)? + "\n")?;
     let driver = guest_driver(context, machine).map_err(Failure::new)?;

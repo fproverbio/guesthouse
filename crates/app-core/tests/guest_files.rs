@@ -113,8 +113,7 @@ fn the_only_keys_are_the_published_ones_that_activate_nothing() {
     assert!(!answers.contains("<ProductKey>"), "the template picks its key when it is filled");
     assert!(answers.contains("<Value>@EDITION@</Value>"));
     assert!(answers.contains("@PRODUCT_KEY@"));
-    let keys: Vec<&str> =
-        guesthouse_app_core::iso::WINDOWS_EDITIONS.iter().filter_map(|(_, key)| *key).collect();
+    let keys: Vec<&str> = guesthouse_app_core::iso::WINDOWS_EDITIONS.iter().map(|(_, key)| *key).collect();
     assert_eq!(
         keys,
         ["W269N-WFGWX-YVC9B-4J6C9-T83GX", "KBN8V-HFGQ4-MGXVD-347P6-PDQGT"],
