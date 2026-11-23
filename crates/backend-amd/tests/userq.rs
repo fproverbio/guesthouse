@@ -58,7 +58,8 @@ fn a_dma_user_queue_writes_through_a_card_whose_kernel_supports_it() {
     let csa_bytes = u64::from(csa_size).max(1).next_multiple_of(align);
     let ring = make(PAGE);
     // The kernel and hardware write these two; radeonsi's own userqueue winsys puts them in VRAM.
-    let rptr = create_buffer(&device, PAGE, align, DOMAIN_VRAM, CpuAccess::NotNeeded).unwrap();
+    // `CpuAccess::Required` on rptr only so the test can read back hardware's own progress.
+    let rptr = create_buffer(&device, PAGE, align, DOMAIN_VRAM, CpuAccess::Required).unwrap();
     let wptr = make(PAGE);
     let csa = create_buffer(&device, csa_bytes, align, DOMAIN_VRAM, CpuAccess::NotNeeded).unwrap();
     let target = create_buffer(&device, PAGE, align, DOMAIN_GTT, CpuAccess::Required).unwrap();
@@ -87,6 +88,7 @@ fn a_dma_user_queue_writes_through_a_card_whose_kernel_supports_it() {
     map_buffer(&device, csa, csa_va, 0, csa_bytes, flags).unwrap();
     map_buffer(&device, target, target_va, 0, PAGE, flags).unwrap();
     map_buffer(&device, fence_target, fence_target_va, 0, PAGE, flags).unwrap();
+    let rptr_cpu = device.map_cpu(rptr, PAGE as usize).unwrap();
     let target_cpu = device.map_cpu(target, PAGE as usize).unwrap();
     let fence_target_cpu = device.map_cpu(fence_target, PAGE as usize).unwrap();
 
@@ -104,15 +106,17 @@ fn a_dma_user_queue_writes_through_a_card_whose_kernel_supports_it() {
     let event = signal.arm_eventfd(&device).unwrap();
     let signalled = wait_eventfd(&event, WAIT_MS);
     eprintln!(
-        "signalled: {signalled:?}, target word now {:#x}, fence target now {:#x}",
+        "signalled: {signalled:?}, target word now {:#x}, fence target now {:#x}, rptr now {:#x}",
         target_cpu.read_u32(0),
-        fence_target_cpu.read_u32(0)
+        fence_target_cpu.read_u32(0),
+        rptr_cpu.read_u32(0)
     );
     std::thread::sleep(std::time::Duration::from_millis(500));
     eprintln!(
-        "after a pause, target word is {:#x}, fence target is {:#x}",
+        "after a pause, target word is {:#x}, fence target is {:#x}, rptr is {:#x}",
         target_cpu.read_u32(0),
-        fence_target_cpu.read_u32(0)
+        fence_target_cpu.read_u32(0),
+        rptr_cpu.read_u32(0)
     );
     assert_eq!(target_cpu.read_u32(0), MAGIC, "the queue's write landed at the wrong place");
     signal.destroy(&device);
@@ -155,7 +159,8 @@ fn a_compute_user_queue_writes_through_a_card_whose_kernel_supports_it() {
     let eop_bytes = u64::from(eop_size).max(1).next_multiple_of(align);
     let ring = make(PAGE);
     // The kernel and hardware write these two; radeonsi's own userqueue winsys puts them in VRAM.
-    let rptr = create_buffer(&device, PAGE, align, DOMAIN_VRAM, CpuAccess::NotNeeded).unwrap();
+    // `CpuAccess::Required` on rptr only so the test can read back hardware's own progress.
+    let rptr = create_buffer(&device, PAGE, align, DOMAIN_VRAM, CpuAccess::Required).unwrap();
     let wptr = make(PAGE);
     let eop = create_buffer(&device, eop_bytes, align, DOMAIN_VRAM, CpuAccess::NotNeeded).unwrap();
     let target = create_buffer(&device, PAGE, align, DOMAIN_GTT, CpuAccess::Required).unwrap();
@@ -184,6 +189,7 @@ fn a_compute_user_queue_writes_through_a_card_whose_kernel_supports_it() {
     map_buffer(&device, eop, eop_va, 0, eop_bytes, flags).unwrap();
     map_buffer(&device, target, target_va, 0, PAGE, flags).unwrap();
     map_buffer(&device, fence_target, fence_target_va, 0, PAGE, flags).unwrap();
+    let rptr_cpu = device.map_cpu(rptr, PAGE as usize).unwrap();
     let target_cpu = device.map_cpu(target, PAGE as usize).unwrap();
     let fence_target_cpu = device.map_cpu(fence_target, PAGE as usize).unwrap();
 
@@ -200,15 +206,17 @@ fn a_compute_user_queue_writes_through_a_card_whose_kernel_supports_it() {
     let event = signal.arm_eventfd(&device).unwrap();
     let signalled = wait_eventfd(&event, WAIT_MS);
     eprintln!(
-        "signalled: {signalled:?}, target word now {:#x}, fence target now {:#x}",
+        "signalled: {signalled:?}, target word now {:#x}, fence target now {:#x}, rptr now {:#x}",
         target_cpu.read_u32(0),
-        fence_target_cpu.read_u32(0)
+        fence_target_cpu.read_u32(0),
+        rptr_cpu.read_u32(0)
     );
     std::thread::sleep(std::time::Duration::from_millis(500));
     eprintln!(
-        "after a pause, target word is {:#x}, fence target is {:#x}",
+        "after a pause, target word is {:#x}, fence target is {:#x}, rptr is {:#x}",
         target_cpu.read_u32(0),
-        fence_target_cpu.read_u32(0)
+        fence_target_cpu.read_u32(0),
+        rptr_cpu.read_u32(0)
     );
     assert_eq!(target_cpu.read_u32(0), MAGIC, "the queue's write landed at the wrong place");
     signal.destroy(&device);
@@ -253,7 +261,8 @@ fn a_gfx_user_queue_writes_through_a_card_whose_kernel_supports_it() {
     let csa_bytes = u64::from(csa_size).max(1).next_multiple_of(align);
     let ring = make(PAGE);
     // The kernel and hardware write these two; radeonsi's own userqueue winsys puts them in VRAM.
-    let rptr = create_buffer(&device, PAGE, align, DOMAIN_VRAM, CpuAccess::NotNeeded).unwrap();
+    // `CpuAccess::Required` on rptr only so the test can read back hardware's own progress.
+    let rptr = create_buffer(&device, PAGE, align, DOMAIN_VRAM, CpuAccess::Required).unwrap();
     let wptr = make(PAGE);
     let shadow = create_buffer(&device, shadow_bytes, align, DOMAIN_VRAM, CpuAccess::NotNeeded).unwrap();
     let csa = create_buffer(&device, csa_bytes, align, DOMAIN_VRAM, CpuAccess::NotNeeded).unwrap();
@@ -285,6 +294,7 @@ fn a_gfx_user_queue_writes_through_a_card_whose_kernel_supports_it() {
     map_buffer(&device, csa, csa_va, 0, csa_bytes, flags).unwrap();
     map_buffer(&device, target, target_va, 0, PAGE, flags).unwrap();
     map_buffer(&device, fence_target, fence_target_va, 0, PAGE, flags).unwrap();
+    let rptr_cpu = device.map_cpu(rptr, PAGE as usize).unwrap();
     let target_cpu = device.map_cpu(target, PAGE as usize).unwrap();
     let fence_target_cpu = device.map_cpu(fence_target, PAGE as usize).unwrap();
 
@@ -311,15 +321,17 @@ fn a_gfx_user_queue_writes_through_a_card_whose_kernel_supports_it() {
     let event = signal.arm_eventfd(&device).unwrap();
     let signalled = wait_eventfd(&event, WAIT_MS);
     eprintln!(
-        "signalled: {signalled:?}, target word now {:#x}, fence target now {:#x}",
+        "signalled: {signalled:?}, target word now {:#x}, fence target now {:#x}, rptr now {:#x}",
         target_cpu.read_u32(0),
-        fence_target_cpu.read_u32(0)
+        fence_target_cpu.read_u32(0),
+        rptr_cpu.read_u32(0)
     );
     std::thread::sleep(std::time::Duration::from_millis(500));
     eprintln!(
-        "after a pause, target word is {:#x}, fence target is {:#x}",
+        "after a pause, target word is {:#x}, fence target is {:#x}, rptr is {:#x}",
         target_cpu.read_u32(0),
-        fence_target_cpu.read_u32(0)
+        fence_target_cpu.read_u32(0),
+        rptr_cpu.read_u32(0)
     );
     assert_eq!(target_cpu.read_u32(0), MAGIC, "the queue's write landed at the wrong place");
     signal.destroy(&device);
