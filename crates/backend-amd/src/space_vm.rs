@@ -165,6 +165,9 @@ pub struct SpaceVm {
     shares: HashMap<u32, Share>,
     /// How fast the card's clock runs, to read the times runs note.
     clock_khz: u32,
+    /// Bits from `AMDGPU_HW_IP_*` for engine families the kernel's user-queue path supports here,
+    /// copied once at open: see [`DeviceInfo::userq_ip_mask`](crate::info::DeviceInfo::userq_ip_mask).
+    userq_ip_mask: u32,
 }
 
 /// Where a run's fence is in guest memory, by guest physical address, and the value it ends with.
@@ -248,7 +251,14 @@ impl SpaceVm {
             video_wake_failed: false,
             shares: HashMap::new(),
             clock_khz: device.info().counter_freq_khz,
+            userq_ip_mask: device.info().userq_ip_mask,
         })
+    }
+
+    /// Whether the kernel's user-queue path covers `ip_type` on this card. Submission still
+    /// always goes through the ioctl path below; nothing here acts on this yet.
+    fn userq_available(&self, ip_type: u32) -> bool {
+        self.userq_ip_mask & (1 << ip_type) != 0
     }
 
     /// The buffer behind an address here, by its handle on the first open, and the offset into it.
@@ -547,6 +557,18 @@ impl SpaceVm {
     /// and doesn't wait for them. The last is the fence writer in `slot`, which writes `fence`.
     pub fn send(&mut self, ip_type: u32, ibs: &[Ib], slot: usize, fence: GuestFence) -> io::Result<()> {
         only_copies_for_the_video_ring(ip_type, ibs)?;
+        if self.userq_available(ip_type) {
+            // The decision point for a future user-queue submission path: this engine could skip
+            // the per-submission buffer list below, but nothing takes that path yet.
+            static TOLD: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            TOLD.get_or_init(|| {
+                log::debug!(
+                    "this card's kernel supports user queues for some engine this backend sends to \
+                     (mask {:#x}), still unused here",
+                    self.userq_ip_mask
+                );
+            });
+        }
         let Some(fence_ibs) = &self.fence_ibs else {
             return Err(io::Error::other("no fence writers were made here"));
         };
@@ -775,6 +797,7 @@ mod tests {
             video_wake_failed: false,
             shares: HashMap::new(),
             clock_khz: 100_000,
+            userq_ip_mask: 0,
         }
     }
 

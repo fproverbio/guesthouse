@@ -48,6 +48,8 @@ const DRM_AMDGPU_INFO: u64 = 0x05;
 const DRM_AMDGPU_GEM_METADATA: u64 = 0x06;
 const DRM_AMDGPU_GEM_VA: u64 = 0x08;
 const DRM_AMDGPU_GEM_USERPTR: u64 = 0x11;
+const DRM_AMDGPU_USERQ: u64 = 0x16;
+const DRM_AMDGPU_USERQ_SIGNAL: u64 = 0x17;
 
 fn number(direction: u64, command: u64, size: usize) -> u64 {
     direction | (size as u64) << IOCTL_SIZE_SHIFT | DRM_IOCTL_MAGIC << 8 | command
@@ -108,6 +110,21 @@ pub mod call {
     pub fn syncobj_eventfd() -> u64 {
         number(IOCTL_READ_WRITE, DRM_SYNCOBJ_EVENTFD, 24)
     }
+    /// `drm_amdgpu_userq`, a union of the create request (72 bytes) and the free request's reply
+    /// (8 bytes): sized for the larger.
+    pub fn userq() -> u64 {
+        number(IOCTL_READ_WRITE, DRM_COMMAND_BASE + DRM_AMDGPU_USERQ, 72)
+    }
+    /// `drm_amdgpu_userq_signal`, 56 bytes: names a submission's new write pointer (already
+    /// written to the queue's own wptr buffer) to a set of sync objects to signal once it's
+    /// reached, in place of a `DRM_AMDGPU_CS` ioctl's syncobj-out chunk.
+    pub fn userq_signal() -> u64 {
+        number(IOCTL_READ_WRITE, DRM_COMMAND_BASE + DRM_AMDGPU_USERQ_SIGNAL, 56)
+    }
+}
+
+pub fn put16(bytes: &mut [u8], at: usize, value: u16) {
+    bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
 }
 
 pub fn put32(bytes: &mut [u8], at: usize, value: u32) {
@@ -335,6 +352,8 @@ mod tests {
         assert_eq!(call::syncobj_create(), 0xC008_64BF);
         assert_eq!(call::syncobj_wait(), 0xC020_64C3);
         assert_eq!(call::syncobj_eventfd(), 0xC018_64CF);
+        assert_eq!(call::userq(), 0xC048_6456);
+        assert_eq!(call::userq_signal(), 0xC038_6457);
     }
 
     fn class_folder(name: &str, nodes: &[(&str, &str, u16)]) -> (PathBuf, PathBuf) {

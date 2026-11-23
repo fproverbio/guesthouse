@@ -347,6 +347,8 @@ fn write_chunk(slot: &mut [u8], id: u32, length_dw: usize, data: u64) {
 // GPU address, which is the smallest thing that proves the engine ran and wrote where it was told.
 const SDMA_OPCODE_WRITE_LINEAR: u32 = 0x00000002;
 const SDMA_OPCODE_NOP: u32 = 0x00000000;
+const SDMA_OPCODE_FENCE: u32 = 0x00000005;
+const SDMA_OPCODE_TRAP: u32 = 0x00000006;
 const SDMA_IB_ALIGNMENT_DWORDS: usize = 8;
 
 /// Builds an SDMA IB that writes `data` to `dst_va`, padded with NOPs to the engine's alignment.
@@ -363,6 +365,88 @@ pub fn sdma_write_ib(dst_va: u64, data: &[u32]) -> Vec<u32> {
     ib
 }
 
+/// An SDMA trap packet. On a `DRM_AMDGPU_CS` ring this raises `SDMA_TRAP`, which drives the
+/// kernel's own per-ring fence tracking (`amdgpu_fence_process`) — but a user queue's completion
+/// is never routed through that source at all: it's `SDMA_FENCE`, carrying the doorbell index to
+/// `amdgpu_userq_process_fence_irq`, which [`sdma_fence_ib`] raises instead. This is still worth
+/// sending (it's what the legacy epilogue ends with, after its own fence packet), but alone it
+/// leaves a user queue submission with nothing to signal `DRM_AMDGPU_USERQ_SIGNAL`'s syncobj.
+pub fn sdma_trap_ib() -> Vec<u32> {
+    vec![SDMA_OPCODE_TRAP, 0]
+}
+
+/// An SDMA fence packet: writes `value` to `dst_va`, the same op the legacy ring epilogue sends
+/// right before its own trap. On a user queue, executing this opcode is what raises `SDMA_FENCE`
+/// (see [`sdma_trap_ib`]), which is what a submission needs for `DRM_AMDGPU_USERQ_SIGNAL`'s
+/// syncobj to ever complete.
+pub fn sdma_fence_ib(dst_va: u64, value: u32) -> Vec<u32> {
+    vec![SDMA_OPCODE_FENCE, dst_va as u32, (dst_va >> 32) as u32, value]
+}
+
+// PM4 packet building, for GFX/COMPUTE user queues: unlike SDMA's own small ISA, these engines'
+// command processor reads "type-3" packets (`nvd.h`'s `PACKET3`/`PACKET3_*` macros), and their
+// ring pointers are dword-, not byte-, granular (`gfx_v11_0_ring_set_wptr_compute`'s
+// `WDOORBELL64(ring->doorbell_index, ring->wptr)` writes the raw value, unlike SDMA's `<< 2`).
+const PM4_PACKET_TYPE3: u32 = 3;
+const PM4_OPCODE_WRITE_DATA: u32 = 0x37;
+const PM4_OPCODE_RELEASE_MEM: u32 = 0x49;
+/// `VGT_EVENT_TYPE`'s `CACHE_FLUSH_AND_INV_TS_EVENT`, the event `gfx_v11_0_ring_emit_fence` raises
+/// for every legacy fence, user queue or not.
+const PM4_EVENT_TYPE_CACHE_FLUSH_AND_INV_TS: u32 = 0x14;
+
+fn pm4_packet3(opcode: u32, body_dwords_minus_one: u32) -> u32 {
+    (PM4_PACKET_TYPE3 << 30) | ((opcode & 0xFF) << 8) | ((body_dwords_minus_one & 0x3FFF) << 16)
+}
+
+/// A PM4 `WRITE_DATA` packet, writing `data` to `dst_va`: the GFX/COMPUTE-engine equivalent of
+/// [`sdma_write_ib`].
+pub fn pm4_write_ib(dst_va: u64, data: &[u32]) -> Vec<u32> {
+    const DST_SEL_MEMORY_ASYNC: u32 = 5 << 8;
+    const WR_CONFIRM: u32 = 1 << 20;
+
+    let body_dwords = 3 + data.len() as u32;
+    let mut ib = Vec::with_capacity(1 + body_dwords as usize);
+    ib.push(pm4_packet3(PM4_OPCODE_WRITE_DATA, body_dwords - 1));
+    ib.push(DST_SEL_MEMORY_ASYNC | WR_CONFIRM);
+    ib.push(dst_va as u32);
+    ib.push((dst_va >> 32) as u32);
+    ib.extend_from_slice(data);
+    ib
+}
+
+/// A PM4 `RELEASE_MEM` packet: writes `value` to `dst_va` and raises the completion interrupt a
+/// user queue's `DRM_AMDGPU_USERQ_SIGNAL` needs — the GFX/COMPUTE-engine equivalent of
+/// [`sdma_fence_ib`]/[`sdma_trap_ib`] together. A `DRM_AMDGPU_CS` submission's ring gets this
+/// appended automatically as its own fence epilogue (`gfx_v11_0_ring_emit_fence`); a user queue's
+/// ring has no such epilogue, so a submission through one must send it itself.
+pub fn pm4_release_mem_ib(dst_va: u64, value: u32) -> Vec<u32> {
+    const GCR_SEQ: u32 = 1 << 22;
+    const GCR_GL2_WB: u32 = 1 << 21;
+    const GCR_GLM_INV: u32 = 1 << 13;
+    const GCR_GLM_WB: u32 = 1 << 12;
+    const CACHE_POLICY_BYPASS: u32 = 3 << 25;
+    const EVENT_INDEX: u32 = 5 << 8;
+    const DATA_SEL_32BIT: u32 = 1 << 29;
+    const INT_SEL_ON_CONFIRM: u32 = 2 << 24;
+
+    vec![
+        pm4_packet3(PM4_OPCODE_RELEASE_MEM, 6),
+        GCR_SEQ
+            | GCR_GL2_WB
+            | GCR_GLM_INV
+            | GCR_GLM_WB
+            | CACHE_POLICY_BYPASS
+            | PM4_EVENT_TYPE_CACHE_FLUSH_AND_INV_TS
+            | EVENT_INDEX,
+        DATA_SEL_32BIT | INT_SEL_ON_CONFIRM,
+        dst_va as u32,
+        (dst_va >> 32) as u32,
+        value,
+        0,
+        0,
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +460,39 @@ mod tests {
         assert_eq!(ib[3], 0, "count is dwords minus one");
         assert_eq!(ib[4], 0xCAFE_D00D);
         assert_eq!(ib.len() % SDMA_IB_ALIGNMENT_DWORDS, 0, "padded to the engine's alignment");
+    }
+
+    #[test]
+    fn a_trap_packet_is_the_bare_opcode_and_a_zero_context() {
+        assert_eq!(sdma_trap_ib(), [SDMA_OPCODE_TRAP, 0]);
+    }
+
+    #[test]
+    fn a_fence_packet_carries_its_address_and_value() {
+        assert_eq!(sdma_fence_ib(0x1_2345_6000, 0x42), [SDMA_OPCODE_FENCE, 0x2345_6000, 0x1, 0x42]);
+    }
+
+    #[test]
+    fn a_pm4_write_packet_carries_its_address_and_payload() {
+        let ib = pm4_write_ib(0x1_2345_6000, &[0xCAFE_D00D]);
+        assert_eq!(ib[0], 0xC003_3700, "type-3 header: opcode 0x37, body 4 dwords (count 3)");
+        assert_eq!(ib[1], (5 << 8) | (1 << 20), "DST_SEL(5) | WR_CONFIRM");
+        assert_eq!(ib[2], 0x2345_6000);
+        assert_eq!(ib[3], 0x1);
+        assert_eq!(ib[4], 0xCAFE_D00D);
+        assert_eq!(ib.len(), 5);
+    }
+
+    #[test]
+    fn a_pm4_release_mem_packet_carries_its_address_and_value() {
+        let ib = pm4_release_mem_ib(0x1_2345_6000, 0x42);
+        assert_eq!(ib[0], 0xC0064900, "type-3 header: opcode 0x49, body 7 dwords (count 6)");
+        assert_eq!(ib[3], 0x2345_6000);
+        assert_eq!(ib[4], 0x1);
+        assert_eq!(ib[5], 0x42, "the value lands in the low sequence dword");
+        assert_eq!(ib[6], 0);
+        assert_eq!(ib[7], 0);
+        assert_eq!(ib.len(), 8);
     }
 
     #[test]

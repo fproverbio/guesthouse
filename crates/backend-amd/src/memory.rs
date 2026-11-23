@@ -12,6 +12,9 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 // GEM_CREATE domains and flags.
 pub const DOMAIN_GTT: u64 = 0x2;
 pub const DOMAIN_VRAM: u64 = 0x4;
+/// An MMIO region for a user queue's doorbell: writing it rings the card's attention to that
+/// queue's ring, in place of a `DRM_AMDGPU_CS` ioctl.
+pub const DOMAIN_DOORBELL: u64 = 0x40;
 const CREATE_CPU_ACCESS_REQUIRED: u64 = 1 << 0;
 /// The kernel fills a new buffer with zeros. WDDM promises a guest that new memory is, and AMD's
 /// driver counts on it: a command buffer's first packet waits on a word it never wrote.

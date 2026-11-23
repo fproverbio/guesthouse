@@ -37,6 +37,12 @@ fn run(address: Option<&str>) -> Result<(), String> {
         "engines         gfx={} compute={} dma={}",
         info.engines.graphics, info.engines.compute, info.engines.dma
     );
+    println!("userq ip mask   {:#x}", info.userq_ip_mask);
+    println!(
+        "fw versions     me={} pfp={} mec={} mes={} (userq GFX/COMPUTE on gfx11/gfx12 needs me>=3090 \
+         pfp>=3190 mec>=3450 mes>=147)",
+        info.details.firmware.me, info.details.firmware.pfp, info.details.firmware.mec, info.details.firmware.mes
+    );
     println!("vram total      {} MiB", info.vram_total >> 20);
     println!("vram visible    {} MiB", info.visible_vram_total >> 20);
     println!("gtt total       {} MiB", info.gtt_total >> 20);

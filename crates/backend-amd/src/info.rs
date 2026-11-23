@@ -18,6 +18,7 @@ const HW_IP_COUNT: u32 = 0x03;
 const TIMESTAMP: u32 = 0x05;
 const FW_VERSION: u32 = 0x0e;
 const READ_MMR_REG: u32 = 0x15;
+const UQ_FW_AREAS: u32 = 0x24;
 
 // Firmware kinds for FW_VERSION, from AMDGPU_INFO_FW_*.
 const FW_GMC: u32 = 0x03;
@@ -99,6 +100,7 @@ const DEV_SQC_INST_CACHE_KB: usize = 396;
 const DEV_GL1C_CACHE_KB: usize = 400;
 const DEV_MALL_SIZE: usize = 408;
 const DEV_ENABLED_RB_MASK_HIGH: usize = 416;
+const DEV_USERQ_IP_MASK: usize = 436;
 /// cu_bitmap and cu_ao_bitmap are four shader engines by four arrays of 32-bit masks.
 const BITMAP_SIDE: usize = 4;
 
@@ -159,6 +161,10 @@ pub struct DeviceInfo {
     pub video_instances: u32,
     /// How each engine family wants its command buffers aligned.
     pub ib_alignment: IbAlignments,
+    /// Bits from `AMDGPU_HW_IP_*` for the engine families with kernel-supported user queues, each
+    /// gated by its own firmware floor and the `user_queue` module parameter. Unused by this
+    /// backend today; read here so capability can be probed without another INFO call later.
+    pub userq_ip_mask: u32,
     /// The rest of what the card reports, which the guest's adapter block is built from.
     pub details: CardDetails,
 }
@@ -323,6 +329,47 @@ fn query_hw_ip_count(file: &impl AsRawFd, ip_type: u32) -> io::Result<u32> {
     Ok(u32::from_le_bytes(reply))
 }
 
+/// The size and alignment, in bytes, the kernel wants for a user queue's engine-specific firmware
+/// area: the DMA engine's context-save area (`drm_amdgpu_userq_mqd_sdma_gfx11.csa_va`'s buffer) or
+/// the COMPUTE engine's end-of-pipe buffer (`drm_amdgpu_userq_mqd_compute_gfx11.eop_va`'s), keyed
+/// by `ip_type`. Only meaningful where [`DeviceInfo::userq_ip_mask`] has that engine's bit.
+fn query_userq_fw_areas(file: &impl AsRawFd, ip_type: u32) -> io::Result<(u32, u32)> {
+    let mut request = [0u8; INFO_REQUEST_SIZE];
+    let mut reply = [0u8; 8];
+    put64(&mut request, INFO_RETURN_POINTER, reply.as_mut_ptr() as u64);
+    put32(&mut request, INFO_RETURN_SIZE, reply.len() as u32);
+    put32(&mut request, INFO_QUERY, UQ_FW_AREAS);
+    put32(&mut request, INFO_HW_IP_TYPE, ip_type);
+    ioctl::drm_ioctl(file, call::info(), &mut request)?;
+    Ok((get32(&reply, 0), get32(&reply, 4)))
+}
+
+/// See [`query_userq_fw_areas`]: the DMA engine's context-save area.
+pub fn query_userq_sdma_csa(file: &impl AsRawFd) -> io::Result<(u32, u32)> {
+    query_userq_fw_areas(file, HW_IP_DMA)
+}
+
+/// See [`query_userq_fw_areas`]: the COMPUTE engine's end-of-pipe buffer.
+pub fn query_userq_compute_eop(file: &impl AsRawFd) -> io::Result<(u32, u32)> {
+    query_userq_fw_areas(file, HW_IP_COMPUTE)
+}
+
+/// The size and alignment, in bytes, the kernel wants for a GFX user queue's shadow buffer and
+/// context-save area (`drm_amdgpu_userq_mqd_gfx11`'s `shadow_va` and `csa_va`): unlike DMA and
+/// COMPUTE, which each have a single firmware area, GFX's `drm_amdgpu_info_uq_metadata_gfx` reply
+/// carries both, as `(shadow_size, shadow_alignment, csa_size, csa_alignment)`. Only meaningful
+/// where [`DeviceInfo::userq_ip_mask`] has the GFX bit.
+pub fn query_userq_gfx_shadow_csa(file: &impl AsRawFd) -> io::Result<(u32, u32, u32, u32)> {
+    let mut request = [0u8; INFO_REQUEST_SIZE];
+    let mut reply = [0u8; 16];
+    put64(&mut request, INFO_RETURN_POINTER, reply.as_mut_ptr() as u64);
+    put32(&mut request, INFO_RETURN_SIZE, reply.len() as u32);
+    put32(&mut request, INFO_QUERY, UQ_FW_AREAS);
+    put32(&mut request, INFO_HW_IP_TYPE, HW_IP_GFX);
+    ioctl::drm_ioctl(file, call::info(), &mut request)?;
+    Ok((get32(&reply, 0), get32(&reply, 4), get32(&reply, 8), get32(&reply, 12)))
+}
+
 /// A firmware's version, or zero if the card has none of that kind.
 fn query_firmware(file: &impl AsRawFd, kind: u32, index: u32) -> u32 {
     let mut request = [0u8; INFO_REQUEST_SIZE];
@@ -473,6 +520,7 @@ pub fn read_device_info(file: &impl AsRawFd, device_folder: Option<&Path>) -> io
             dma: dma.ib_alignment,
             video: video.ib_alignment,
         },
+        userq_ip_mask: get32(&dev, DEV_USERQ_IP_MASK),
         details: read_details(file, &dev, gfx, compute, device_folder),
     })
 }

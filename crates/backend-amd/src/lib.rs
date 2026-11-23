@@ -43,6 +43,7 @@ mod space_vm;
 mod submit;
 mod traffic;
 mod udmabuf;
+mod userq;
 mod video;
 mod video_close;
 mod video_ib;
@@ -56,17 +57,22 @@ pub use fence_ib::{
 pub use gl_present::VARIABLE as GL_COPY_VARIABLE;
 pub use ib_dump::VARIABLE as IB_DUMP_VARIABLE;
 pub use info::{
-    CardDetails, DeviceInfo, EngineSet, Firmware, HW_IP_DMA, HW_IP_GFX, read_device_info, read_gpu_clock,
+    CardDetails, DeviceInfo, EngineSet, Firmware, HW_IP_COMPUTE, HW_IP_DMA, HW_IP_GFX, query_userq_compute_eop,
+    query_userq_gfx_shadow_csa, query_userq_sdma_csa, read_device_info, read_gpu_clock,
 };
 pub use ioctl::{AMD_VENDOR, amd_render_node};
 pub use memory::{
-    CpuAccess, DOMAIN_GTT, DOMAIN_VRAM, GemHandle, MapFlags, MemoryType, set_tiling as set_buffer_tiling,
-    tiling as buffer_tiling,
+    CpuAccess, DOMAIN_DOORBELL, DOMAIN_GTT, DOMAIN_VRAM, GemHandle, MapFlags, MemoryType,
+    set_tiling as set_buffer_tiling, tiling as buffer_tiling,
 };
 pub use share::VARIABLE as GIVE_WAY_VARIABLE;
 pub use share::{RunTimes, Share};
-pub use submit::{Context, Ib, Syncobj, sdma_write_ib, submit, submit_after, submit_all, wait_eventfd};
+pub use submit::{
+    Context, Ib, Syncobj, pm4_release_mem_ib, pm4_write_ib, sdma_fence_ib, sdma_trap_ib, sdma_write_ib, submit,
+    submit_after, submit_all, wait_eventfd,
+};
 pub use udmabuf::Udmabuf;
+pub use userq::{ComputeUserq, GfxUserq, SdmaUserq};
 pub use video::{VARIABLE as VIDEO_VARIABLE, switch_is_on as video_switch_is_on};
 pub use video_close::{
     CLOSE_VARIABLE as VIDEO_CLOSE_VARIABLE, HOLD_VARIABLE as VIDEO_HOLD_FREED_VARIABLE,
