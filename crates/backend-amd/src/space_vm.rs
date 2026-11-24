@@ -313,7 +313,10 @@ impl SpaceVm {
                 TOLD.get_or_init(|| {
                     log::warn!("the kernel won't take this space's buffer list ({error}); submissions name the buffers themselves");
                 });
-                self.bo_list = None;
+                // A refused update leaves the old list under its handle, still holding its buffers.
+                if let Some(old) = self.bo_list.take() {
+                    let _ = submit::destroy_bo_list(&self.file, old);
+                }
                 self.bo_list_given_up = true;
                 return Ok(None);
             }

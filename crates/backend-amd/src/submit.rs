@@ -64,6 +64,7 @@ const LIST_ENTRY_SIZE: usize = 12;
 const LIST_ENTRIES: usize = 16;
 const LIST_OUT_HANDLE: usize = 0;
 const OP_CREATE: u32 = 0;
+const OP_DESTROY: u32 = 1;
 const OP_UPDATE: u32 = 2;
 
 // drm_amdgpu_cs in/out, 24 bytes.
@@ -272,6 +273,15 @@ pub fn make_bo_list(file: &impl AsRawFd, buffers: &[GemHandle], existing: Option
         return Err(io::Error::other("the kernel gave no handle for the buffer list"));
     }
     Ok(u64::from(handle))
+}
+
+/// Lets the kernel free the list `handle` names, and with it its hold on every buffer in it. A list
+/// that is merely forgotten keeps those buffers referenced until the file closes.
+pub fn destroy_bo_list(file: &impl AsRawFd, handle: u64) -> io::Result<()> {
+    let mut request = [0u8; 24];
+    put32(&mut request, LIST_OPERATION, OP_DESTROY);
+    put32(&mut request, LIST_HANDLE, handle as u32);
+    ioctl::drm_ioctl(file, ioctl::call::bo_list(), &mut request)
 }
 
 /// Submits one IB and asks the kernel to signal `signal` when it retires. The IB is already at
