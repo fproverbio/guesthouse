@@ -301,6 +301,7 @@ impl SpaceVm {
             return Ok(self.bo_list);
         }
         if buffers.is_empty() {
+            self.destroy_buffer_list();
             return Ok(None);
         }
         let made = match submit::make_bo_list(&self.file, buffers, self.bo_list) {
