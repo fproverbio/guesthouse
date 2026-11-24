@@ -306,6 +306,12 @@ impl SpaceVm {
         }
         let made = match submit::make_bo_list(&self.file, buffers, self.bo_list) {
             Ok(made) => made,
+            Err(error) if list_may_pass_later(&error) => {
+                // Out of memory or interrupted: this submission names its buffers itself, and the
+                // next one asks for the list again. A refused update leaves the old list as it was.
+                log::debug!("the kernel didn't take this space's buffer list this time ({error})");
+                return Ok(None);
+            }
             Err(error) => {
                 // The kernel refuses a list it cannot take, and a submission that names its buffers
                 // outright still runs, so the space gets that from now on rather than losing its
@@ -822,9 +828,26 @@ fn only_copies_for_the_video_ring(ip_type: u32, ibs: &[Ib]) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether the kernel's refusal of a buffer list is one that can pass, such as no memory for it
+/// just now or a call cut short, as opposed to a kernel that will not make lists here at all.
+fn list_may_pass_later(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::ENOMEM | libc::EINTR | libc::EAGAIN | libc::EBUSY))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_list_refused_for_want_of_memory_or_by_a_signal_is_tried_again_and_any_other_is_not() {
+        for code in [libc::ENOMEM, libc::EINTR, libc::EAGAIN, libc::EBUSY] {
+            assert!(list_may_pass_later(&io::Error::from_raw_os_error(code)), "errno {code}");
+        }
+        for code in [libc::ENOTTY, libc::EINVAL, libc::EPERM, libc::ENOENT, libc::EFAULT] {
+            assert!(!list_may_pass_later(&io::Error::from_raw_os_error(code)), "errno {code}");
+        }
+        assert!(!list_may_pass_later(&io::Error::other("the kernel gave no handle for the buffer list")));
+    }
 
     const BUFFER: GemHandle = GemHandle(7);
     const HERE: GemHandle = GemHandle(3);
