@@ -19,6 +19,7 @@
 // Linux only: it talks to amdgpu through ioctl. Other systems get an empty crate.
 #![cfg(target_os = "linux")]
 
+mod buffer_list;
 mod card_name;
 mod channel_order;
 mod copy_ib;

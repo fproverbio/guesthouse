@@ -8,6 +8,7 @@
 //! file: see [`crate::udmabuf`]. A buffer taken in is kept while any of its mappings in the space
 //! are, and let go after the last.
 
+use crate::buffer_list::BufferList;
 use crate::device::Device;
 use crate::fault::{self, Fault};
 use crate::fence_ib::{FenceIbs, Writer};
@@ -165,18 +166,8 @@ pub struct SpaceVm {
     shares: HashMap<u32, Share>,
     /// How fast the card's clock runs, to read the times runs note.
     clock_khz: u32,
-    /// The kernel's list of the buffers a run here may touch, and whether a mapping has changed since
-    /// it was made. Looking the handles up and building the list costs on every submission that
-    /// carries them, so the list is made only when it changes. The kernel still locks and validates
-    /// every buffer in it at each submission.
-    bo_list: Option<u64>,
-    bo_list_stale: bool,
-    /// The buffers the cached list was made from. A submission that names the list gets these, not
-    /// the array it carries, so a list made from another set is a list that names the wrong buffers.
-    bo_list_holds: Vec<GemHandle>,
-    /// Set once the kernel has refused a list here for good, so every submission after that carries
-    /// its own rather than asking again.
-    bo_list_given_up: bool,
+    /// The kernel's list of the buffers a run here may touch, made when they change.
+    lists: BufferList,
 }
 
 /// Where a run's fence is in guest memory, by guest physical address, and the value it ends with.
@@ -260,10 +251,7 @@ impl SpaceVm {
             video_wake_failed: false,
             shares: HashMap::new(),
             clock_khz: device.info().counter_freq_khz,
-            bo_list: None,
-            bo_list_stale: true,
-            bo_list_holds: Vec::new(),
-            bo_list_given_up: false,
+            lists: BufferList::default(),
         })
     }
 
@@ -296,42 +284,7 @@ impl SpaceVm {
     /// The buffers a submission may touch, made into a list once and named by its handle after that.
     /// The guest doesn't say which it uses, so every buffer mapped here is in it.
     fn buffer_list(&mut self, buffers: &[GemHandle]) -> io::Result<Option<u64>> {
-        if self.bo_list_given_up {
-            return Ok(None);
-        }
-        if self.bo_list.is_some() && !self.bo_list_stale && self.bo_list_holds == buffers {
-            return Ok(self.bo_list);
-        }
-        if buffers.is_empty() {
-            self.destroy_buffer_list();
-            return Ok(None);
-        }
-        let made = match submit::make_bo_list(&self.file, buffers, self.bo_list) {
-            Ok(made) => made,
-            Err(error) if list_may_pass_later(&error) => {
-                // Out of memory or interrupted: this submission names its buffers itself, and the
-                // next one asks for the list again. A refused update leaves the old list as it was.
-                log::debug!("the kernel didn't take this space's buffer list this time ({error})");
-                return Ok(None);
-            }
-            Err(error) => {
-                // The kernel refuses a list it cannot take, and a submission that names its buffers
-                // outright still runs, so the space gets that from now on rather than losing its
-                // card. This cost the screen once, when a refusal went up instead of sideways.
-                // A refused update leaves the old list under its handle, still holding its buffers.
-                self.destroy_buffer_list();
-                self.bo_list_given_up = true;
-                log::warn!(
-                    "the kernel won't take this space's buffer list ({error}); submissions name the buffers themselves"
-                );
-                return Ok(None);
-            }
-        };
-        self.bo_list = Some(made);
-        self.bo_list_stale = false;
-        self.bo_list_holds.clear();
-        self.bo_list_holds.extend_from_slice(buffers);
-        Ok(Some(made))
+        Ok(self.lists.get(&self.file, buffers))
     }
 
     /// The buffers a submission here may name: every one mapped here, and this space's own for fence
@@ -342,15 +295,6 @@ impl SpaceVm {
         buffers.extend(self.fence_ibs.as_ref().map(FenceIbs::handle));
         buffers.extend(self.video_ib.as_ref().map(VideoIb::handle));
         buffers
-    }
-
-    /// Lets the kernel free the cached list. A list holds a reference on every buffer in it, so a
-    /// buffer's memory is only freed once the list is gone, whatever happens to its handle.
-    fn destroy_buffer_list(&mut self) {
-        if let Some(list) = self.bo_list.take() {
-            let _ = submit::destroy_bo_list(&self.file, list);
-        }
-        self.bo_list_holds.clear();
     }
 
     /// Runs command buffers already mapped here on the engine family `ip_type`, in order, and waits
@@ -748,7 +692,7 @@ impl SpaceVm {
             return Err(error);
         }
         self.books.add(buffer, handle, address, offset, length);
-        self.bo_list_stale = true;
+        self.lists.mark_stale();
         Ok(())
     }
 
@@ -757,14 +701,12 @@ impl SpaceVm {
         let Some(unmapping) = self.books.remove(address) else {
             return Ok(());
         };
-        self.bo_list_stale = true;
+        self.lists.mark_stale();
         let result = memory::unmap(&self.file, unmapping.handle, unmapping.address, unmapping.length);
         if unmapping.last_use {
             // The cached list holds a reference on this buffer, so closing the handle alone would
             // keep its memory until the next submission remakes the list.
-            if self.bo_list_holds.contains(&unmapping.handle) {
-                self.destroy_buffer_list();
-            }
+            self.lists.close(&self.file, unmapping.handle);
             memory::close(&self.file, unmapping.handle);
         }
         result
@@ -829,26 +771,9 @@ fn only_copies_for_the_video_ring(ip_type: u32, ibs: &[Ib]) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether the kernel's refusal of a buffer list is one that can pass, such as no memory for it
-/// just now or a call cut short, as opposed to a kernel that will not make lists here at all.
-fn list_may_pass_later(error: &io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(libc::ENOMEM | libc::EINTR | libc::EAGAIN | libc::EBUSY))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_list_refused_for_want_of_memory_or_by_a_signal_is_tried_again_and_any_other_is_not() {
-        for code in [libc::ENOMEM, libc::EINTR, libc::EAGAIN, libc::EBUSY] {
-            assert!(list_may_pass_later(&io::Error::from_raw_os_error(code)), "errno {code}");
-        }
-        for code in [libc::ENOTTY, libc::EINVAL, libc::EPERM, libc::ENOENT, libc::EFAULT] {
-            assert!(!list_may_pass_later(&io::Error::from_raw_os_error(code)), "errno {code}");
-        }
-        assert!(!list_may_pass_later(&io::Error::other("the kernel gave no handle for the buffer list")));
-    }
 
     const BUFFER: GemHandle = GemHandle(7);
     const HERE: GemHandle = GemHandle(3);
@@ -879,10 +804,7 @@ mod tests {
             video_wake_failed: false,
             shares: HashMap::new(),
             clock_khz: 100_000,
-            bo_list: None,
-            bo_list_stale: true,
-            bo_list_holds: Vec::new(),
-            bo_list_given_up: false,
+            lists: BufferList::default(),
         }
     }
 
