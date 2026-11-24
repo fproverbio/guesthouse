@@ -316,13 +316,12 @@ impl SpaceVm {
                 // The kernel refuses a list it cannot take, and a submission that names its buffers
                 // outright still runs, so the space gets that from now on rather than losing its
                 // card. This cost the screen once, when a refusal went up instead of sideways.
-                static TOLD: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-                TOLD.get_or_init(|| {
-                    log::warn!("the kernel won't take this space's buffer list ({error}); submissions name the buffers themselves");
-                });
                 // A refused update leaves the old list under its handle, still holding its buffers.
                 self.destroy_buffer_list();
                 self.bo_list_given_up = true;
+                log::warn!(
+                    "the kernel won't take this space's buffer list ({error}); submissions name the buffers themselves"
+                );
                 return Ok(None);
             }
         };
