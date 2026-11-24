@@ -314,9 +314,7 @@ impl SpaceVm {
                     log::warn!("the kernel won't take this space's buffer list ({error}); submissions name the buffers themselves");
                 });
                 // A refused update leaves the old list under its handle, still holding its buffers.
-                if let Some(old) = self.bo_list.take() {
-                    let _ = submit::destroy_bo_list(&self.file, old);
-                }
+                self.destroy_buffer_list();
                 self.bo_list_given_up = true;
                 return Ok(None);
             }
@@ -326,6 +324,15 @@ impl SpaceVm {
         self.bo_list_holds.clear();
         self.bo_list_holds.extend_from_slice(buffers);
         Ok(Some(made))
+    }
+
+    /// Lets the kernel free the cached list. A list holds a reference on every buffer in it, so a
+    /// buffer's memory is only freed once the list is gone, whatever happens to its handle.
+    fn destroy_buffer_list(&mut self) {
+        if let Some(list) = self.bo_list.take() {
+            let _ = submit::destroy_bo_list(&self.file, list);
+        }
+        self.bo_list_holds.clear();
     }
 
     /// Runs command buffers already mapped here on the engine family `ip_type`, in order, and waits
@@ -737,6 +744,11 @@ impl SpaceVm {
         self.bo_list_stale = true;
         let result = memory::unmap(&self.file, unmapping.handle, unmapping.address, unmapping.length);
         if unmapping.last_use {
+            // The cached list holds a reference on this buffer, so closing the handle alone would
+            // keep its memory until the next submission remakes the list.
+            if self.bo_list_holds.contains(&unmapping.handle) {
+                self.destroy_buffer_list();
+            }
             memory::close(&self.file, unmapping.handle);
         }
         result
