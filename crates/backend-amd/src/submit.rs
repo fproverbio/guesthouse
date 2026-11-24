@@ -257,8 +257,10 @@ pub struct Ib {
     pub bytes: u32,
 }
 
-/// Makes the list of buffers a submission may touch, or replaces the one `existing` names. The kernel
-/// validates a list when it is made, so a submission that names it pays nothing for the handles.
+/// Makes the list of buffers a submission may touch, or replaces the one `existing` names. Making a
+/// list only looks the handles up and takes a reference on each buffer; every submission that names it
+/// still has the kernel lock and validate each buffer in it. What a submission saves is the lookup
+/// and the building of the list from the handles it would otherwise carry.
 pub fn make_bo_list(file: &impl AsRawFd, buffers: &[GemHandle], existing: Option<u64>) -> io::Result<u64> {
     let entries = bo_entries(buffers);
     let mut request = [0u8; 24];

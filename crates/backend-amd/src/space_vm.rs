@@ -166,14 +166,16 @@ pub struct SpaceVm {
     /// How fast the card's clock runs, to read the times runs note.
     clock_khz: u32,
     /// The kernel's list of the buffers a run here may touch, and whether a mapping has changed since
-    /// it was made. Validating it costs milliseconds at these sizes, so it is made only when it changes.
+    /// it was made. Looking the handles up and building the list costs on every submission that
+    /// carries them, so the list is made only when it changes. The kernel still locks and validates
+    /// every buffer in it at each submission.
     bo_list: Option<u64>,
     bo_list_stale: bool,
-    /// The buffers the cached list was made from. The kernel validates that list, not the array a
-    /// submission carries, so a list made from another set is a list that names the wrong buffers.
+    /// The buffers the cached list was made from. A submission that names the list gets these, not
+    /// the array it carries, so a list made from another set is a list that names the wrong buffers.
     bo_list_holds: Vec<GemHandle>,
-    /// Set once the kernel has refused a list here, so every submission after that carries its own
-    /// rather than asking again.
+    /// Set once the kernel has refused a list here for good, so every submission after that carries
+    /// its own rather than asking again.
     bo_list_given_up: bool,
 }
 
